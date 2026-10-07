@@ -209,13 +209,19 @@ cwd → `$CLAUDE_PROJECT_DIR` → the process cwd**. The session's cwd comes fro
 
 What this plugin does **not** do, and what has **not** been proven live:
 
-- **No live DSH session has been observed running this plugin.** It has never been
-  installed into a profile and booted; every behaviour above is proven by
-  `node --test test/*.test.js` against a **fake** cordis context that mirrors the real
-  registration shape (`ctx.effect` runs its callback and records the effect; `ctx.on`
-  and `ctx.systemPrompt.section` record their registrations). The gate scripts and the
-  watcher are **not** executed by the suite — an injected runner and an injected spawner
-  stand in, so the suite proves wiring and delegation, not the scripts' own verdicts.
+- **The plugin has been COMPOSED into a real DSH profile, but never driven end to end.**
+  `dsh --profile web --dump-config` against an **isolated `$DSH_HOME` copy** (the live
+  profile untouched) resolves the bundle and applies its `cordis.patch.yml`, emitting the
+  row `- id: dsh-opencharly / name: dsh-opencharly / config: {gates, soul, watch}`. So the
+  package, the manifest and the row composition are proven LIVE. What is not yet proven is
+  a session exercising the seams at runtime.
+- **The scripts and the spawner ARE executed by the suite** (`test/runner.test.js`):
+  `runGateScript` runs real fixture scripts for allow (exit 0), block (exit 2 with the
+  reason on stderr), an anomalous exit, a missing script, a timeout and an abort,
+  asserting the `{"tool_input":{"command":...}}` stdin payload; `spawnWatcherProcess` runs
+  a real child and asserts the stdout/stderr channel tagging and the settle outcome. The
+  WIRING tests still inject a runner and a spawner so that registration is isolated from
+  execution — both layers are covered, but neither proves a live session's own behaviour.
 - **A live block has never been observed.** Nobody has watched this plugin turn a
   `git push --force` into a `deny`. The scripts' own block behaviour is proven by the
   repo's `gate_test.py`, not by this suite.
