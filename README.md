@@ -211,7 +211,7 @@ What this plugin does **not** do, and what has **not** been proven live:
 
 - **No live DSH session has been observed running this plugin.** It has never been
   installed into a profile and booted; every behaviour above is proven by
-  `node --test test/` against a **fake** cordis context that mirrors the real
+  `node --test test/*.test.js` against a **fake** cordis context that mirrors the real
   registration shape (`ctx.effect` runs its callback and records the effect; `ctx.on`
   and `ctx.systemPrompt.section` record their registrations). The gate scripts and the
   watcher are **not** executed by the suite — an injected runner and an injected spawner
@@ -265,7 +265,7 @@ cordis.patch.yml   the profile bundle row
 ## Tests
 
 ```sh
-node --test test/
+node --test test/*.test.js
 ```
 
 No build step and no dependencies: plain ESM, `node:test`, Node ≥ 22.

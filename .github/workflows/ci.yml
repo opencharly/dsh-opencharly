@@ -43,4 +43,4 @@ jobs:
           done
 
       - name: Run the test suite
-        run: node --test test/
+        run: node --test test/*.test.js
