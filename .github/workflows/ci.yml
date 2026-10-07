@@ -1,0 +1,46 @@
+# Repo CI for dsh-opencharly.
+#
+# No build step, no dependencies: the plugin is plain ESM, so CI is a syntax check on
+# every shipped module plus the full `node:test` suite. The suite is the gate — it
+# covers every pure helper and exercises the three live seams through a fake cordis
+# context, and it fails if any seam stops registering.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the shipped floor (package.json engines.node) and the LTS the
+        # production profile runs; 24 is the current line. The matrix exists so a
+        # Node-only breakage cannot hide behind one runtime.
+        node: ['22', '24']
+        os: [ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax-check every shipped module
+        run: |
+          for file in lib/*.js; do
+            node --check "$file"
+            echo "ok $file"
+          done
+
+      - name: Run the test suite
+        run: node --test test/
