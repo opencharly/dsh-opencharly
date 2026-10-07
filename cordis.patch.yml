@@ -1,0 +1,23 @@
+# dsh-opencharly bundle patch: installs the OpenCharly row into a DSH profile.
+#
+# Composed like every other dsh bundle patch: the entries below are applied after
+# the earlier bundle layers and before the profile's own cordis.patch.yml, so the
+# profile can disable or re-target this row without touching this file.
+#
+# The whole row is REPLACED, never deep-merged: overriding one config key means
+# restating the row's whole `config:` block. Every key is optional — the defaults
+# are in lib/config.js (DEFAULT_CONFIG) and are applied by the plugin's own
+# defensive reader, because this plugin deliberately ships no schemastery
+# `Config` export (see README.md, "Limits").
+- insert:
+    - id: dsh-opencharly
+      name: dsh-opencharly
+      config:
+        # The three seams, each independently switchable. Deleting a key means
+        # "use the default", which is `true` for all three.
+        gates:
+          enabled: true
+        soul:
+          enabled: true
+        watch:
+          enabled: true
