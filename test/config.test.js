@@ -8,7 +8,8 @@ test('normalizeConfig fills every default when config is absent', () => {
     projectRoot: '',
     gates: { ...DEFAULT_CONFIG.gates },
     soul: { ...DEFAULT_CONFIG.soul },
-    watch: { ...DEFAULT_CONFIG.watch }
+    watch: { ...DEFAULT_CONFIG.watch },
+    rearm: { ...DEFAULT_CONFIG.rearm }
   });
 });
 

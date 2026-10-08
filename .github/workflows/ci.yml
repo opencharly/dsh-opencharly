@@ -2,7 +2,7 @@
 #
 # No build step, no dependencies: the plugin is plain ESM, so CI is a syntax check on
 # every shipped module plus the full `node:test` suite. The suite is the gate — it
-# covers every pure helper and exercises the three live seams through a fake cordis
+# covers every pure helper and exercises the four live seams through a fake cordis
 # context, and it fails if any seam stops registering.
 name: ci
 
