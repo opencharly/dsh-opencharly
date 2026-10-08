@@ -26,14 +26,22 @@
 
 # The goal budget, raised for this umbrella's long campaigns.
 #
-# A BARE row — `- id: dsh-goal` with no `insert:` — TARGETS the row the INSTALL's
-# base bundle already contributes; it does not add one. (`insert:` is for ADDING a
-# row, which is what the `dsh-opencharly` entry above does.) Verified against the
-# host's own working patch layers, which target base rows exactly this way.
+# A BARE row — an entry with an `id` and NO `insert:` — TARGETS the row of that id
+# that an earlier layer already contributes; it does not add one. (`insert:` is for
+# ADDING a row, which is what the `dsh-opencharly` entry above does.)
+#
+# THE ID IS `goal`, NOT `dsh-goal`. The base bundle's row is
+#   - id: goal
+#     name: '@deepseek-ai/dsh-goal'
+# (`@deepseek-ai/dsh-base/cordis.patch.yml:313-314`). The id and the module name are
+# different strings, and targeting the NAME silently matched nothing: composed with
+# DSH's own composer, `- id: dsh-goal` returned the base row unchanged, with no error
+# and no duplicate — the raise simply vanished. Targeting the real id yields one row
+# carrying the value. Both polarities were run; see the PR body.
 #
 # `config:` REPLACES the row's whole config block, never deep-merging it — and
 # `dsh-goal`'s entire Config is this one key (`dsh-goal/lib/index.js:588`), so the
 # replacement costs nothing.
-- id: dsh-goal
+- id: goal
   config:
     defaultMaxGoalRounds: 1500
