@@ -27,13 +27,14 @@ this plugin shells out to `marketplace/scripts/gh_watch.sh`, whose own pin is th
 `marketplace` gitlink in the session's checkout, and a branch pin makes that pairing
 undecidable.
 
-## What it does — three seams
+## What it does — four seams
 
 | Seam | DSH API | What it delegates to |
 |---|---|---|
 | **Git gates** | `tools/pre-execute` waterfall listener | `.claude/hooks/pre-commit-gate.sh`, `.claude/hooks/pre-push-gate.sh` in the **session's own checkout** |
 | **SOUL injection** | `ctx.systemPrompt.section({ name, order, text, interpolate })` | `<project root>/SOUL.md`, re-read at every prompt assembly |
 | **Watch auto-arm** | `session/created` listener + `ctx.jobs.start(spec)` | `marketplace/scripts/gh_watch.sh`, armed from `.dsh/watch.items` |
+| **Goal re-arm** | `session/event` listener + `ctx.goals.resume(agent, revision)` | the `goals` service, on the **human turn** only (`user/message`) |
 
 ### 1. Git gates
 
@@ -126,6 +127,39 @@ A standing watch is **not duplicated**: while a watcher for a checkout is live, 
 session in that same checkout is told so instead of racing it. Once the job settles (a
 STATE fire, a crash, the peer-held lock), the next session in that checkout re-arms.
 
+### 4. Goal re-arm on the human turn
+
+DSH disarms a goal on every `agent/created` (`dsh-goal/lib/index.js:594-596`), and that is a
+safety property rather than a nuisance: `agent/created` fires for a fresh **post-resume
+process** too, so re-arming there would let a stale goal silently continue work no human
+re-authorized. The cost was a magic word — a human had to say "resume" before a long-running
+goal counted again.
+
+This seam keys on the **human turn** instead. `session/event` carries the session's event
+stream, and `user/message` is the only user-shaped event in it, so a post-resume process
+emits none: a resumed process stays disarmed while a human turn re-arms. The safety
+distinction survives and the magic word goes away.
+
+| Step | Call | Why |
+|---|---|---|
+| read the agent | `ctx.reflect.get('agents', false).get(session.id)` | the session→agent seam |
+| read the goal | `ctx.reflect.get('goals', false).get(agent)` | `undefined` when no goal is current |
+| decide | `goal.phase === 'active'` | **`active` only** — see below |
+| arm | `goals.resume(agent, goal.revision)` | the service's own documented transition |
+
+**Why `resume` and not a phase write.** `resume` commits the activation edge `"armed"`
+through the same guard the CLI uses (`dsh-goal/lib/index.js:686-698`), so this seam cannot
+invent a state the rest of the system does not understand. That guard permits an
+already-`active` goal — which is exactly the case here (phase `active`, activation
+`disarmed`) — and it also permits `paused` and `blocked`, which this seam deliberately
+**does not** re-arm: a human who paused or blocked a goal must not have it restarted by
+their next sentence. Those phases get one line saying so, not a silent nothing.
+
+Both services are read through `ctx.reflect.get(name, false)`, the lazy read the watch seam
+already uses for `jobs`: injecting `agents`/`goals` would make a profile without
+`@deepseek-ai/dsh-goal` lose the git gates and the SOUL, which need nothing from them. A
+profile without the goal registry simply gets no re-arm.
+
 ## Configuration
 
 The row's `config:` block. **Every key is optional, and the whole row is replaced, never
@@ -172,11 +206,14 @@ defensive reader; a wrong-typed value falls back to its default rather than thro
           autoRearm: true
           skipSubagents: true
           jobKind: opencharly-watch
+        rearm:
+          enabled: true             # re-arm an ACTIVE goal on the human turn
+          phase: active             # the ONLY phase it re-arms; see seam 4
 ```
 
 ### Project-root resolution
 
-One rule, used by all three seams, in this order: **explicit config → the session's own
+One rule, used by all four seams, in this order: **explicit config → the session's own
 cwd → `$CLAUDE_PROJECT_DIR` → the process cwd**. The session's cwd comes from
 `session.header.cwd`, captured on `session/created` and, at tool-call time, from
 `ctx.sessions.get(exec.agent.sessionId).header.cwd`.
@@ -258,7 +295,7 @@ What this plugin does **not** do, and what has **not** been proven live:
 ## Layout
 
 ```
-lib/index.js       apply(ctx, config, deps) — wires the three seams as ctx.effect registrations
+lib/index.js       apply(ctx, config, deps) — wires the four seams as ctx.effect registrations
 lib/gates.js       pure: extractCommand, classifyCommand(s), gateScriptFor, resolveGateScripts
 lib/watch.js       pure: parseWatchItems, buildWatcherArgv
 lib/soul.js        pure: readSoul, soulSectionText

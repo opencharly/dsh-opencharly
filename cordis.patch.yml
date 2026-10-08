@@ -13,11 +13,27 @@
     - id: dsh-opencharly
       name: dsh-opencharly
       config:
-        # The three seams, each independently switchable. Deleting a key means
-        # "use the default", which is `true` for all three.
+        # The four seams, each independently switchable. Deleting a key means
+        # "use the default", which is `true` for all four.
         gates:
           enabled: true
         soul:
           enabled: true
         watch:
           enabled: true
+        rearm:
+          enabled: true
+
+# The goal budget, raised for this umbrella's long campaigns.
+#
+# A BARE row — `- id: dsh-goal` with no `insert:` — TARGETS the row the INSTALL's
+# base bundle already contributes; it does not add one. (`insert:` is for ADDING a
+# row, which is what the `dsh-opencharly` entry above does.) Verified against the
+# host's own working patch layers, which target base rows exactly this way.
+#
+# `config:` REPLACES the row's whole config block, never deep-merging it — and
+# `dsh-goal`'s entire Config is this one key (`dsh-goal/lib/index.js:588`), so the
+# replacement costs nothing.
+- id: dsh-goal
+  config:
+    defaultMaxGoalRounds: 1500
