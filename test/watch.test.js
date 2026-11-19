@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 
 import {
   DEFAULT_WATCH_SCRIPT,
+  ENGINE_RELATIVE,
   WATCH_ITEMS_RELATIVE,
   buildWatcherArgv,
+  decideRearm,
+  itemKey,
   normalizeWatchItem,
   parseWatchItems
 } from '../lib/watch.js';
@@ -109,7 +112,7 @@ test('parseWatchItems parses the umbrella watch.items header block to nothing', 
   // with `#`, one blank line between paragraphs, and one commented-out example item.
   const text = [
     '# watch.items — the PR/issue items a DSH session watches through the',
-    '# harness-INDEPENDENT watcher, `marketplace/scripts/gh_watch.sh`.',
+    '# ONE watcher every harness uses, `node scripts/gh/cli.ts watch`.',
     '#',
     '# One item per line: `owner/repo#num`, `owner/repo/pull/num`,',
     '# `owner/repo/issues/num`, or a full https://github.com/owner/repo/(pull|issues)/num',
@@ -127,24 +130,23 @@ test('parseWatchItems parses the umbrella watch.items header block to nothing', 
 
 // ── buildWatcherArgv ─────────────────────────────────────────────────────────────
 
-test('buildWatcherArgv produces the exact gh_watch.sh vector', () => {
+test('buildWatcherArgv produces the exact CLI vector', () => {
   assert.deepEqual(
     buildWatcherArgv(['opencharly/opencharly#359', 'opencharly/marketplace/pull/42'], {
-      scriptPath: '/umbrella/marketplace/scripts/gh_watch.sh',
-      events: 'comment,verdict,merged,closed,stall',
-      intervalSec: 60,
+      scriptPath: '/umbrella/scripts/gh/cli.ts',
+      events: 'comment,verdict,merged,closed,conflict,stall',
+      intervalSec: 300,
       stallMin: 60,
       workflow: 'charly/pr-validator',
-      timeoutSec: 0,
-      autoRearm: true
+      timeoutSec: 0
     }),
     [
-      '/umbrella/marketplace/scripts/gh_watch.sh',
-      '--events', 'comment,verdict,merged,closed,stall',
-      '--interval', '60',
+      '/umbrella/scripts/gh/cli.ts',
+      'watch',
+      '--events', 'comment,verdict,merged,closed,conflict,stall',
+      '--interval', '300',
       '--stallmin', '60',
       '--workflow', 'charly/pr-validator',
-      '--auto-rearm',
       'opencharly/opencharly#359',
       'opencharly/marketplace/pull/42'
     ]
@@ -152,42 +154,91 @@ test('buildWatcherArgv produces the exact gh_watch.sh vector', () => {
 });
 
 test('buildWatcherArgv omits --timeout at 0 and emits it above 0', () => {
-  const base = { scriptPath: 'gh_watch.sh', events: 'merged', intervalSec: 60, stallMin: 60, workflow: 'wf' };
+  const base = { scriptPath: 'cli.ts', events: 'merged', intervalSec: 300, stallMin: 60, workflow: 'wf' };
   assert.equal(buildWatcherArgv(['a/b#1'], { ...base, timeoutSec: 0 }).includes('--timeout'), false);
-  assert.equal(buildWatcherArgv(['a/b#1'], { ...base, timeoutSec: 600 }).includes('--timeout'), true);
   assert.deepEqual(buildWatcherArgv(['a/b#1'], { ...base, timeoutSec: 600 }), [
-    'gh_watch.sh', '--events', 'merged', '--interval', '60', '--stallmin', '60', '--workflow', 'wf',
-    '--timeout', '600', '--auto-rearm', 'a/b#1'
+    'cli.ts', 'watch', '--events', 'merged', '--interval', '300', '--stallmin', '60', '--workflow', 'wf',
+    '--timeout', '600', 'a/b#1'
   ]);
 });
 
-test('buildWatcherArgv switches to --no-rearm only for an explicit false', () => {
-  const argv = (autoRearm) => buildWatcherArgv(['a/b#1'], { scriptPath: 'gh_watch.sh', autoRearm });
-  assert.equal(argv(false).includes('--no-rearm'), true);
-  assert.equal(argv(false).includes('--auto-rearm'), false);
-  assert.equal(argv(true).includes('--auto-rearm'), true);
-  // Omitting the flag keeps the standing watch; a DEFAULT must never be the one-shot.
-  assert.equal(argv(undefined).includes('--auto-rearm'), true);
+test('buildWatcherArgv adds --no-arm-wake only on a re-arm (an explicit true)', () => {
+  const argv = (noArmWake) => buildWatcherArgv(['a/b#1'], { scriptPath: 'cli.ts', noArmWake });
+  assert.equal(argv(true).includes('--no-arm-wake'), true);
+  // The FIRST arm must report a verdict already on the head, so the default never suppresses it.
+  assert.equal(argv(false).includes('--no-arm-wake'), false);
+  assert.equal(argv(undefined).includes('--no-arm-wake'), false);
 });
 
-test('buildWatcherArgv defaults the script path to the org watcher', () => {
-  assert.equal(buildWatcherArgv(['a/b#1'])[0], DEFAULT_WATCH_SCRIPT);
+test('buildWatcherArgv defaults to the org watcher CLI', () => {
+  assert.deepEqual(buildWatcherArgv(['a/b#1']).slice(0, 2), [DEFAULT_WATCH_SCRIPT, 'watch']);
+  assert.equal(DEFAULT_WATCH_SCRIPT, 'scripts/gh/cli.ts');
+  assert.equal(ENGINE_RELATIVE, 'scripts/gh/lib/watch.ts');
   assert.equal(WATCH_ITEMS_RELATIVE, '.dsh/watch.items');
 });
 
 test('buildWatcherArgv is inert (empty argv) with nothing to watch', () => {
   assert.deepEqual(buildWatcherArgv([]), []);
-  assert.deepEqual(buildWatcherArgv([], { scriptPath: 'gh_watch.sh' }), []);
+  assert.deepEqual(buildWatcherArgv([], { scriptPath: 'cli.ts' }), []);
   assert.deepEqual(buildWatcherArgv(null), []);
   assert.deepEqual(buildWatcherArgv(undefined), []);
   assert.deepEqual(buildWatcherArgv(['', '   ', null, 42]), []);
 });
 
 test('buildWatcherArgv skips flags whose value is empty or nonsense', () => {
-  assert.deepEqual(buildWatcherArgv(['a/b#1'], { scriptPath: 'g.sh', events: '', workflow: '', intervalSec: 0 }), [
-    'g.sh', '--auto-rearm', 'a/b#1'
+  assert.deepEqual(buildWatcherArgv(['a/b#1'], { scriptPath: 'c.ts', events: '', workflow: '', intervalSec: 0 }), [
+    'c.ts', 'watch', 'a/b#1'
   ]);
-  assert.deepEqual(buildWatcherArgv(['a/b#1'], { scriptPath: 'g.sh', stallMin: 0 }), [
-    'g.sh', '--stallmin', '0', '--auto-rearm', 'a/b#1'
+  assert.deepEqual(buildWatcherArgv(['a/b#1'], { scriptPath: 'c.ts', stallMin: 0 }), [
+    'c.ts', 'watch', '--stallmin', '0', 'a/b#1'
   ]);
+});
+
+// ── itemKey ──────────────────────────────────────────────────────────────────────
+
+test('itemKey gives the CLI\'s owner/repo#num for every accepted form', () => {
+  for (const raw of ['acme/widget#12', 'acme/widget/pull/12', 'acme/widget/issues/12', 'https://github.com/acme/widget/pull/12?x=1', '  acme/widget#12  ']) {
+    assert.equal(itemKey(raw), 'acme/widget#12', raw);
+  }
+  assert.equal(itemKey('not an item'), null);
+});
+
+// ── decideRearm ──────────────────────────────────────────────────────────────────
+
+// The engine's set, as a test fixture: the real binding IMPORTS it from the umbrella's
+// scripts/gh/lib/watch.ts and never names a member (see lib/index.js loadEngineStateEvents).
+const ENGINE_STATE_EVENTS = new Set(['merged', 'closed', 'conflict', 'stall']);
+const items = ['acme/widget#1', 'https://github.com/acme/widget/pull/2'];
+
+test('decideRearm: a STATE event retires exactly its item, matched by key across forms', () => {
+  const next = decideRearm({ items, code: 0, line: 'CONFLICT acme/widget#2  conflicts with its base  https://x', stateEvents: ENGINE_STATE_EVENTS });
+  assert.deepEqual(next.rearm, ['acme/widget#1']);
+  assert.equal(next.retired, 'acme/widget#2');
+});
+
+test('decideRearm: the last item retired leaves nothing to re-arm (the watch ends)', () => {
+  const next = decideRearm({ items: ['acme/widget#1'], code: 0, line: 'MERGED   acme/widget#1  (unblocked)  https://x', stateEvents: ENGINE_STATE_EVENTS });
+  assert.deepEqual(next.rearm, []);
+});
+
+test('decideRearm: a DELTA wake or an ARM report keeps every item', () => {
+  for (const line of ['COMMENT  acme/widget#1  new comment (1 -> 2)  https://x', 'VERDICT  acme/widget#1  BLOCK  validate / validate failure at h1  https://x', 'ARM      acme/widget#1  state=open  verdict=BLOCK  https://x']) {
+    assert.deepEqual(decideRearm({ items, code: 0, line, stateEvents: ENGINE_STATE_EVENTS }).rearm, items, line);
+  }
+});
+
+test('decideRearm: the set decides — an event the engine does not list as state is never retired', () => {
+  // Same CONFLICT line, but an engine set WITHOUT conflict: the item is kept. The binding
+  // follows the engine's set, whatever it is, which is what keeps it from drifting.
+  const next = decideRearm({ items, code: 0, line: 'CONFLICT acme/widget#2  x', stateEvents: new Set(['merged']) });
+  assert.deepEqual(next.rearm, items);
+});
+
+test('decideRearm: a timeout re-arms everything; every failure exit stops, visibly', () => {
+  assert.deepEqual(decideRearm({ items, code: 4, line: 'TIMEOUT  no event within 600s', stateEvents: ENGINE_STATE_EVENTS }).rearm, items);
+  for (const code of [5, 6, 7, 8, 143, 1]) {
+    const next = decideRearm({ items, code, line: '', stateEvents: ENGINE_STATE_EVENTS });
+    assert.deepEqual(next.rearm, [], `exit ${code}`);
+    assert.ok(next.reason.length > 0, `exit ${code} names its reason`);
+  }
 });

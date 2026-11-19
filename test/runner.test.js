@@ -143,13 +143,16 @@ test('runGateScript: an abort settles with aborted=true and does not wait for th
 test('spawnWatcherProcess: a clean watcher exit pipes both channels and settles completed', async () => {
   const job = recorder();
   const hooks = spawnWatcherProcess(
-    ['-c', 'echo "MERGED acme/widget#1"; echo "diagnostic" >&2; exit 0'],
+    ['-e', 'console.log("noise"); console.log("MERGED   acme/widget#1  (unblocked)"); console.error("diagnostic"); process.exit(0)'],
     { cwd: tmpdir(), job }
   );
   const outcome = await hooks.done;
 
   assert.equal(outcome.status, 'completed');
-  assert.match(job.text(), /MERGED acme\/widget#1/);
+  // The re-arm decision reads the exit code and the LAST stdout line — the wake line.
+  assert.equal(outcome.code, 0);
+  assert.equal(outcome.line, 'MERGED   acme/widget#1  (unblocked)');
+  assert.match(job.text(), /MERGED {3}acme\/widget#1/);
   // stdout events and stderr diagnostics are tagged, so the wake line is separable.
   assert.ok(job.appended.some((a) => a.channel === 'stderr' && /diagnostic/.test(a.chunk)));
   assert.ok(job.appended.some((a) => a.channel === 'stdout' && /MERGED/.test(a.chunk)));
@@ -158,16 +161,18 @@ test('spawnWatcherProcess: a clean watcher exit pipes both channels and settles 
 
 test('spawnWatcherProcess: a non-zero watcher exit settles failed with the code', async () => {
   const job = recorder();
-  const hooks = spawnWatcherProcess(['-c', 'exit 7'], { cwd: tmpdir(), job });
+  const hooks = spawnWatcherProcess(['-e', 'process.exit(7)'], { cwd: tmpdir(), job });
   const outcome = await hooks.done;
 
   assert.equal(outcome.status, 'failed');
   assert.match(outcome.detail, /exit code: 7/);
+  assert.equal(outcome.code, 7);
+  assert.equal(outcome.line, '');
 });
 
 test('spawnWatcherProcess: cancel settles as killed, so a job is never left dangling', async () => {
   const job = recorder();
-  const hooks = spawnWatcherProcess(['-c', 'sleep 30'], { cwd: tmpdir(), job });
+  const hooks = spawnWatcherProcess(['-e', 'setTimeout(() => {}, 30000)'], { cwd: tmpdir(), job });
   hooks.cancel('superseded');
 
   const outcome = await hooks.done;

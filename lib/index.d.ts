@@ -3,8 +3,9 @@
  *
  * Seams: a `tools/pre-execute` git gate that delegates to the repository's own
  * `.claude/hooks/{pre-commit,pre-push}-gate.sh`; a `systemPrompt` section carrying the
- * project-root `SOUL.md` identity; and a `session/created` listener that arms
- * `marketplace/scripts/gh_watch.sh` from `.dsh/watch.items` as a background job.
+ * project-root `SOUL.md` identity; and a `session/created` listener that arms the
+ * umbrella's `node scripts/gh/cli.ts watch` from `.dsh/watch.items` as a background job,
+ * re-arming after each wake and retiring an item whose state event fired.
  *
  * @module dsh-opencharly
  */
@@ -54,7 +55,6 @@ export interface OpenCharlyConfig {
     stallMin?: number;
     workflow?: string;
     timeoutSec?: number;
-    autoRearm?: boolean;
     skipSubagents?: boolean;
     jobKind?: string;
   };
@@ -74,6 +74,8 @@ export interface OpenCharlyDeps {
   runGate?: GateRunner;
   /** Produces the watcher job; defaults to {@link spawnWatcherProcess}. */
   spawnWatcher?: WatcherProducer;
+  /** Resolves the engine's `STATE_EVENTS` for a root; defaults to {@link loadEngineStateEvents}. */
+  loadStateEvents?: (root: string) => Promise<ReadonlySet<string>>;
 }
 
 /**
@@ -167,8 +169,14 @@ export declare function resolveGateScripts(options?: GateResolutionOptions): Gat
 /** The org's GitHub watch list, relative to the project root. */
 export declare const WATCH_ITEMS_RELATIVE = '.dsh/watch.items';
 
-/** The org's canonical watcher, relative to the project root. */
-export declare const DEFAULT_WATCH_SCRIPT = 'marketplace/scripts/gh_watch.sh';
+/** The org's ONE watcher CLI, relative to the project root. */
+export declare const DEFAULT_WATCH_SCRIPT = 'scripts/gh/cli.ts';
+
+/** The watcher engine whose `STATE_EVENTS` decides which wakes retire an item. */
+export declare const ENGINE_RELATIVE = 'scripts/gh/lib/watch.ts';
+
+/** The CLI's key for an item (`owner/repo#num`), or `null` when it is not well-formed. */
+export declare function itemKey(raw: unknown): string | null;
 
 /** Normalize one `watch.items` line, or `null` when it is not a well-formed item. */
 export declare function normalizeWatchItem(raw: unknown): string | null;
@@ -184,11 +192,23 @@ export interface WatcherArgvOptions {
   stallMin?: number;
   workflow?: string;
   timeoutSec?: number;
-  autoRearm?: boolean;
+  /** A RE-arm: add `--no-arm-wake`, so a verdict already reported does not wake again. */
+  noArmWake?: boolean;
 }
 
-/** The exact `gh_watch.sh` argument vector; `[]` when there is nothing to watch. */
+/** The exact CLI argument vector (`<cli> watch [flags] <item>…`); `[]` when there is nothing to watch. */
 export declare function buildWatcherArgv(items: unknown, opts?: WatcherArgvOptions): string[];
+
+/** What to watch after a run ends: the items to re-arm (empty = stop), the item retired, and why. */
+export declare function decideRearm(input: {
+  items: string[];
+  code: number | null | undefined;
+  line: string | undefined;
+  stateEvents: ReadonlySet<string>;
+}): { rearm: string[]; retired: string | null; reason: string };
+
+/** Import the engine's `STATE_EVENTS` from `<root>/scripts/gh/lib/watch.ts`. */
+export declare function loadEngineStateEvents(root: string): Promise<ReadonlySet<string>>;
 
 /** The header every harness's SOUL block carries. */
 export declare const SOUL_HEADER = '## Who you are — SOUL.md';
@@ -237,7 +257,8 @@ export interface JobHandleLike {
 /** The `JobHooks` shape `JobSpec.run` must return. */
 export interface WatcherJobHooks {
   cancel(reason?: string): void;
-  done: Promise<{ status: 'completed' | 'killed' | 'failed'; detail?: string; result?: string }>;
+  /** `code` (143 for a signal) and `line` (the last stdout line — the wake) decide the re-arm. */
+  done: Promise<{ status: 'completed' | 'killed' | 'failed'; detail?: string; result?: string; code?: number | null; line?: string }>;
 }
 
 /** Spawns the watcher and returns its job hooks. */
@@ -246,7 +267,7 @@ export type WatcherProducer = (
   options: { cwd: string; job: JobHandleLike }
 ) => WatcherJobHooks;
 
-/** Spawn `gh_watch.sh` as a job producer; its exit settles the job and wakes the session. */
+/** Spawn the watcher CLI (with this process's node) as a job producer; its exit settles the job and wakes the session. */
 export declare function spawnWatcherProcess(
   argv: string[],
   options: { cwd: string; job: JobHandleLike }

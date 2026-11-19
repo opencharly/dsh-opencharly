@@ -90,8 +90,8 @@ function tempCheckout({ soul = null, items = null, watcher = true } = {}) {
   writeFileSync(join(root, '.claude/hooks/pre-push-gate.sh'), '#!/usr/bin/env bash\nexit 0\n');
   if (soul !== null) writeFileSync(join(root, 'SOUL.md'), soul);
   if (watcher) {
-    mkdirSync(join(root, 'marketplace/scripts'), { recursive: true });
-    writeFileSync(join(root, 'marketplace/scripts/gh_watch.sh'), '#!/usr/bin/env bash\nexit 0\n');
+    mkdirSync(join(root, 'scripts/gh'), { recursive: true });
+    writeFileSync(join(root, 'scripts/gh/cli.ts'), '// the watcher CLI stand-in: the seam only checks it exists\n');
   }
   if (items !== null) {
     mkdirSync(join(root, '.dsh'), { recursive: true });
@@ -481,7 +481,7 @@ function fakeSpawner() {
   return { calls, settle, producer, append };
 }
 
-test('SEAM 3 arms gh_watch.sh as a JOB from .dsh/watch.items, with the exact argv', () => {
+test('SEAM 3 arms the watcher CLI as a JOB from .dsh/watch.items, with the exact argv', () => {
   const root = tempCheckout({ items: '# comment\n\nopencharly/opencharly#359\nopencharly/marketplace/pull/42\n' });
   const jobs = fakeJobs();
   const spawner = fakeSpawner();
@@ -495,7 +495,7 @@ test('SEAM 3 arms gh_watch.sh as a JOB from .dsh/watch.items, with the exact arg
     assert.equal(jobs.started.length, 1, 'exactly one job per session');
     const spec = jobs.started[0];
     assert.equal(spec.kind, 'opencharly-watch');
-    assert.match(spec.label, /gh_watch 2 item\(s\): opencharly\/opencharly#359 opencharly\/marketplace\/pull\/42/);
+    assert.match(spec.label, /gh watch 2 item\(s\): opencharly\/opencharly#359 opencharly\/marketplace\/pull\/42/);
 
     // The job body delegates to the watcher producer with the built argv.
     const job = { append() {}, updateProgress() {} };
@@ -503,12 +503,12 @@ test('SEAM 3 arms gh_watch.sh as a JOB from .dsh/watch.items, with the exact arg
     assert.equal(spawner.calls.length, 1);
     assert.equal(spawner.calls[0].cwd, root);
     assert.deepEqual(spawner.calls[0].argv, [
-      join(root, 'marketplace/scripts/gh_watch.sh'),
-      '--events', 'comment,verdict,merged,closed,stall',
-      '--interval', '60',
+      join(root, 'scripts/gh/cli.ts'),
+      'watch',
+      '--events', 'comment,verdict,merged,closed,conflict,stall',
+      '--interval', '300',
       '--stallmin', '60',
       '--workflow', 'charly/pr-validator',
-      '--auto-rearm',
       'opencharly/opencharly#359',
       'opencharly/marketplace/pull/42'
     ]);
@@ -547,7 +547,7 @@ test('SEAM 3 is inert when the item list is absent', () => {
   }
 });
 
-test('SEAM 3 SKIPS VISIBLY when the watcher script is missing (stale marketplace pin)', () => {
+test('SEAM 3 SKIPS VISIBLY when the watcher CLI is missing (a checkout older than the shared watcher)', () => {
   const root = tempCheckout({ items: 'opencharly/opencharly#359\n', watcher: false });
   const jobs = fakeJobs();
   const { ctx, record } = makeFakeCtx({ jobs: jobs.service });
@@ -555,7 +555,7 @@ test('SEAM 3 SKIPS VISIBLY when the watcher script is missing (stale marketplace
   try {
     for (const onCreated of sessionListeners(record)) onCreated({ id: 's1', header: { cwd: root } });
     assert.equal(jobs.started.length, 0);
-    assert.ok(record.logs.some((l) => l.level === 'warn' && /gh_watch\.sh not found/.test(l.text)));
+    assert.ok(record.logs.some((l) => l.level === 'warn' && /scripts\/gh\/cli\.ts not found/.test(l.text)));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -633,6 +633,70 @@ test('SEAM 3 does not double-arm a root while its watcher is live, and re-arms o
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ── SEAM 3: the re-arm after each wake ───────────────────────────────────────────
+// The engine's set, as a fixture: the real binding IMPORTS it (loadEngineStateEvents).
+const ENGINE_STATE_EVENTS = new Set(['merged', 'closed', 'conflict', 'stall']);
+
+/** Arm one session over `items`, settle the first job with `outcome`, and return what happened. */
+async function armAndSettle(items, outcome, loadStateEvents = async () => ENGINE_STATE_EVENTS) {
+  const root = tempCheckout({ items });
+  const jobs = fakeJobs();
+  const spawner = fakeSpawner();
+  const { ctx, record } = makeFakeCtx({ jobs: jobs.service });
+  plugin.apply(ctx, {}, { spawnWatcher: spawner.producer, loadStateEvents });
+  try {
+    for (const onCreated of sessionListeners(record)) onCreated({ id: 's1', header: { cwd: root } });
+    jobs.started[0].run({ append() {}, updateProgress() {} });
+    await spawner.settle[0](outcome);
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    if (jobs.started.length > 1) jobs.started[1].run({ append() {}, updateProgress() {} });
+    return { jobs, spawner, record, root };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('SEAM 3 retires an item whose STATE event fired — a CONFLICT is never re-armed (the pi hot-loop)', async () => {
+  const { jobs, record } = await armAndSettle('opencharly/opencharly#359\n', {
+    status: 'completed', code: 0, line: 'CONFLICT opencharly/opencharly#359  conflicts with its base  https://x'
+  });
+  assert.equal(jobs.started.length, 1, 'a state event must not re-arm its item');
+  assert.ok(record.logs.some((l) => /watch ended — CONFLICT opencharly\/opencharly#359/.test(l.text)));
+});
+
+test('SEAM 3 re-arms the remaining items with --no-arm-wake after a state event retires one', async () => {
+  const { jobs, spawner } = await armAndSettle('opencharly/opencharly#359\nopencharly/marketplace/pull/42\n', {
+    status: 'completed', code: 0, line: 'MERGED   opencharly/marketplace#42  (unblocked)  https://x'
+  });
+  assert.equal(jobs.started.length, 2);
+  const argv = spawner.calls[1].argv;
+  assert.ok(argv.includes('--no-arm-wake'), 'a re-arm must not re-report a verdict already on the head');
+  assert.deepEqual(argv.slice(-1), ['opencharly/opencharly#359'], 'only the un-retired item is re-armed');
+});
+
+test('SEAM 3 re-arms every item after a DELTA wake (a comment or a verdict)', async () => {
+  const { jobs, spawner } = await armAndSettle('opencharly/opencharly#359\n', {
+    status: 'completed', code: 0, line: 'VERDICT  opencharly/opencharly#359  BLOCK  validate / validate failure at h1  https://x'
+  });
+  assert.equal(jobs.started.length, 2);
+  assert.ok(spawner.calls[1].argv.includes('--no-arm-wake'));
+  assert.equal(spawner.calls[1].argv.at(-1), 'opencharly/opencharly#359');
+});
+
+test('SEAM 3 stops, visibly, on a watcher failure exit (here: a rate limit)', async () => {
+  const { jobs, record } = await armAndSettle('opencharly/opencharly#359\n', { status: 'failed', code: 7, line: '' });
+  assert.equal(jobs.started.length, 1);
+  assert.ok(record.logs.some((l) => /watch ended — a rate limit/.test(l.text)));
+});
+
+test('SEAM 3 does not re-arm when the engine set cannot be loaded, and says so', async () => {
+  const { jobs, record } = await armAndSettle('opencharly/opencharly#359\n', { status: 'completed', code: 0, line: 'COMMENT  opencharly/opencharly#359  x' }, async () => {
+    throw new Error('no engine');
+  });
+  assert.equal(jobs.started.length, 1);
+  assert.ok(record.logs.some((l) => l.level === 'warn' && /NOT re-armed — cannot load the engine's STATE_EVENTS/.test(l.text)));
 });
 
 test('SEAM 3 never throws out of session/created, which vetoes on a throw', () => {
