@@ -11,6 +11,7 @@ import {
   normalizeWatchItem,
   parseWatchItems
 } from '../lib/watch.js';
+import { ENGINE_STATE_EVENTS } from './engine-fixture.js';
 
 // ── normalizeWatchItem ───────────────────────────────────────────────────────────
 
@@ -205,9 +206,6 @@ test('itemKey gives the CLI\'s owner/repo#num for every accepted form', () => {
 
 // ── decideRearm ──────────────────────────────────────────────────────────────────
 
-// The engine's set, as a test fixture: the real binding IMPORTS it from the umbrella's
-// scripts/gh/lib/watch.ts and never names a member (see lib/index.js loadEngineStateEvents).
-const ENGINE_STATE_EVENTS = new Set(['merged', 'closed', 'conflict', 'stall']);
 const items = ['acme/widget#1', 'https://github.com/acme/widget/pull/2'];
 
 test('decideRearm: a STATE event retires exactly its item, matched by key across forms', () => {

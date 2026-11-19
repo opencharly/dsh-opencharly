@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import * as plugin from '../lib/index.js';
+import { ENGINE_STATE_EVENTS } from './engine-fixture.js';
 
 /**
  * A fake cordis context that behaves like the real one where it matters:
@@ -636,8 +637,6 @@ test('SEAM 3 does not double-arm a root while its watcher is live, and re-arms o
 });
 
 // ── SEAM 3: the re-arm after each wake ───────────────────────────────────────────
-// The engine's set, as a fixture: the real binding IMPORTS it (loadEngineStateEvents).
-const ENGINE_STATE_EVENTS = new Set(['merged', 'closed', 'conflict', 'stall']);
 
 /** Arm one session over `items`, settle the first job with `outcome`, and return what happened. */
 async function armAndSettle(items, outcome, loadStateEvents = async () => ENGINE_STATE_EVENTS) {
