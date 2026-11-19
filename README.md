@@ -23,8 +23,8 @@ dsh plugin --profile web add "github:opencharly/dsh-opencharly#<commit>"
 (`@deepseek-ai/dsh/lib/bin.js:115-122`), so the `<commit>` is any immutable ref of this
 repository. Then add the bundle row to the profile's `dsh.profile.bundles` list —
 `dsh-opencharly` — and restart the profile. Pin a **merged** commit, never a branch:
-this plugin shells out to `marketplace/scripts/gh_watch.sh`, whose own pin is the
-`marketplace` gitlink in the session's checkout, and a branch pin makes that pairing
+this plugin runs the umbrella's `scripts/gh/cli.ts` from the session's checkout, so the
+watcher it runs is that checkout's, and a branch pin of the plugin makes the pairing
 undecidable.
 
 ## What it does — four seams
@@ -33,7 +33,7 @@ undecidable.
 |---|---|---|
 | **Git gates** | `tools/pre-execute` waterfall listener | `.claude/hooks/pre-commit-gate.sh`, `.claude/hooks/pre-push-gate.sh` in the **session's own checkout** |
 | **SOUL injection** | `ctx.systemPrompt.section({ name, order, text, interpolate })` | `<project root>/SOUL.md`, re-read at every prompt assembly |
-| **Watch auto-arm** | `session/created` listener + `ctx.jobs.start(spec)` | `marketplace/scripts/gh_watch.sh`, armed from `.dsh/watch.items` |
+| **Watch auto-arm** | `session/created` listener + `ctx.jobs.start(spec)` | the umbrella's `node scripts/gh/cli.ts watch`, armed from `.dsh/watch.items`; re-armed after each wake |
 | **Goal re-arm** | `session/event` listener + `ctx.goals.resume(agent, revision)` | the `goals` service, on the **human turn** only (`user/message`) |
 
 ### 1. Git gates
@@ -105,10 +105,11 @@ charly identity does not belong in an unrelated one.
 ### 3. Session-start watch auto-arm
 
 On `session/created`, the plugin reads `.dsh/watch.items` from the session's checkout and
-arms `gh_watch.sh` as a **background job**:
+arms the org's ONE watcher — the umbrella's `scripts/gh/cli.ts` (opencharly/opencharly#1140),
+run by the DSH process's own node — as a **background job**:
 
 ```
-gh_watch.sh --events <events> --interval <n> --stallmin <n> --workflow <wf> [--timeout <n>] <--auto-rearm|--no-rearm> <item> …
+node scripts/gh/cli.ts watch --events <events> --interval <n> --stallmin <n> --workflow <wf> [--timeout <n>] [--no-arm-wake] <item> …
 ```
 
 The item grammar is the harness-portable one — `owner/repo#num`, `owner/repo/pull/num`,
@@ -117,15 +118,32 @@ the SAME grammar `.pi/watch.items`, `.reasonix/watch.items` and `.dsh/watch.item
 The shipped `.dsh/watch.items` is comment-only, so the watcher is **inert by default**.
 
 **Why a job and not a bespoke loop.** DSH notifies a session when a *background job*
-finishes, so the watcher's own exit IS the wake — no turn-injection shim is needed, and
-`gh_watch.sh` stays the one watcher implementation every harness shares. The plugin does
-not poll, does not re-arm and does not interpret a wake. `--auto-rearm` (the default)
-keeps the watch alive across DELTA fires (comment/verdict); a STATE fire
-(merged/closed/stall) settles the job on purpose, and that settlement is the notification.
+finishes, so the watcher's own exit IS the wake — no turn-injection shim is needed, and the
+CLI stays the one watcher implementation every harness shares. The plugin does not poll and
+does not judge a verdict.
+
+**The re-arm after each wake.** The CLI is one finite run per wake, so the seam re-arms the
+next run itself, by the rule the pi binding follows (`decideRearm` in `lib/watch.js`):
+
+- an item whose **state event** fired is **retired**, never re-armed. A state event fires
+  from the arm baseline and `--no-arm-wake` does not suppress it, so re-arming an item still
+  in that state re-fires it at once: measured with this seam's own retire rule disabled, one
+  conflicted PR started 193 watcher jobs in 15 s. WHICH events are state events is the
+  engine's own `STATE_EVENTS`, imported from the checkout's `scripts/gh/lib/watch.ts` — this
+  plugin names none of them;
+- any other wake (a verdict, a comment, the arm report) and a timeout re-arm the remaining
+  items with `--no-arm-wake`, so a verdict already reported is not reported again;
+- a usage error, a peer holding the watch lock, a rate limit, a failed initial poll or a
+  takeover (exits 5, 6, 7, 8, 143) **stop** the watch, with the reason in the log.
+
+The CLI and the engine are TypeScript, which node runs natively from 22.18 (measured on
+22.23 and 26.11, the production line and the current one); on an older node the watch seam
+fails visibly (the job exits non-zero and the log says the watch ended) while the gates and
+the SOUL seam are unaffected.
 
 A standing watch is **not duplicated**: while a watcher for a checkout is live, a second
-session in that same checkout is told so instead of racing it. Once the job settles (a
-STATE fire, a crash, the peer-held lock), the next session in that checkout re-arms.
+session in that same checkout is told so instead of racing it. Once the watch ends (every
+item retired, a stop exit, a crash), the next session in that checkout re-arms.
 
 ### 4. Goal re-arm on the human turn
 
@@ -197,13 +215,12 @@ defensive reader; a wrong-typed value falls back to its default rather than thro
           enabled: true
           root: ''                 # overrides projectRoot for this seam
           itemsPath: .dsh/watch.items
-          scriptPath: marketplace/scripts/gh_watch.sh
-          events: comment,verdict,merged,closed,stall
-          intervalSec: 60          # gh_watch.sh refuses anything under 60
+          scriptPath: scripts/gh/cli.ts
+          events: comment,verdict,merged,closed,conflict,stall
+          intervalSec: 300         # the CLI refuses anything under its 300 s floor
           stallMin: 60
           workflow: charly/pr-validator
           timeoutSec: 0            # 0 omits --timeout (no deadline)
-          autoRearm: true
           skipSubagents: true
           jobKind: opencharly-watch
         rearm:
@@ -269,10 +286,10 @@ What this plugin does **not** do, and what has **not** been proven live:
   (`@perrylink/dsh-github/lib/ci/bot.js:115`), but no session-start auto-arm has ever been
   seen to fire. If the seam is absent, the plugin logs a visible skip and does nothing —
   it never pretends to watch.
-- **`gh_watch.sh` is never run by the test suite** (it calls `gh`). Its argument grammar
-  was read from the script's own parser (`marketplace/scripts/gh_watch.sh:114-127`) and
-  mirrored from the working pi binding (`.pi/extensions/watch.ts:241-252`); that the vector
-  is accepted is unproven here.
+- **The real watcher CLI runs only in the live test.** `test/live-watch.test.js` runs the
+  plugin's real wiring against the umbrella's real `scripts/gh/` and a local GitHub, when
+  `DSH_OPENCHARLY_UMBRELLA=<umbrella checkout>` is set; otherwise it skips, visibly. The
+  rest of the suite injects the producer and the engine set.
 - **No schemastery `Config` export.** This package ships no runtime dependencies, so the
   row's `config:` is not schema-validated. `lib/config.js` defaults and type-checks by
   hand instead, and drops unknown keys.
@@ -280,7 +297,7 @@ What this plugin does **not** do, and what has **not** been proven live:
   are not detected — the same limit the gate scripts' own parser states, and the same
   reason the server-side branch protection exists.
 - **The watcher is one per checkout, not one per session.** A second session in the same
-  checkout is told the watch is already armed rather than racing `gh_watch.sh`'s
+  checkout is told the watch is already armed rather than racing the CLI's
   single-instance lock.
 - **The gate scripts are resolved from the session's own cwd, with no upward search.** A
   DSH session is meant to root at the umbrella (`AGENTS.md` Part II rule 2), and the gates

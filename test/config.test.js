@@ -24,7 +24,7 @@ test('normalizeConfig keeps a well-formed override and defaults the rest', () =>
     projectRoot: '/umbrella',
     gates: { enabled: false, onGateError: 'deny', timeoutMs: 2500 },
     soul: { order: -500, maxBytes: 1024 },
-    watch: { intervalSec: 120, autoRearm: false, events: 'merged,stall' }
+    watch: { intervalSec: 600, events: 'merged,stall' }
   });
   assert.equal(config.projectRoot, '/umbrella');
   assert.equal(config.gates.enabled, false);
@@ -34,8 +34,7 @@ test('normalizeConfig keeps a well-formed override and defaults the rest', () =>
   assert.equal(config.soul.order, -500);
   assert.equal(config.soul.maxBytes, 1024);
   assert.equal(config.soul.sectionName, DEFAULT_CONFIG.soul.sectionName);
-  assert.equal(config.watch.intervalSec, 120);
-  assert.equal(config.watch.autoRearm, false);
+  assert.equal(config.watch.intervalSec, 600);
   assert.equal(config.watch.events, 'merged,stall');
   assert.equal(config.watch.stallMin, DEFAULT_CONFIG.watch.stallMin);
 });
@@ -45,7 +44,7 @@ test('normalizeConfig replaces a wrong-typed value with its default instead of t
     projectRoot: 42,
     gates: { enabled: 'yes', root: null, timeoutMs: -1, onGateError: 'explode' },
     soul: { enabled: 0, path: [], order: 'first', maxBytes: 'lots' },
-    watch: { intervalSec: '60', autoRearm: 'true', jobKind: {} }
+    watch: { intervalSec: '60', jobKind: {} }
   });
   assert.equal(config.projectRoot, DEFAULT_CONFIG.projectRoot);
   // A negative timeout is finite and therefore accepted as given; the caller owns it.
@@ -58,7 +57,6 @@ test('normalizeConfig replaces a wrong-typed value with its default instead of t
   assert.equal(config.soul.order, null);
   assert.equal(config.soul.maxBytes, DEFAULT_CONFIG.soul.maxBytes);
   assert.equal(config.watch.intervalSec, DEFAULT_CONFIG.watch.intervalSec);
-  assert.equal(config.watch.autoRearm, DEFAULT_CONFIG.watch.autoRearm);
   assert.equal(config.watch.jobKind, DEFAULT_CONFIG.watch.jobKind);
 });
 
